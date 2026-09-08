@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  ...(process.env.VERCEL ? {} : { output: "standalone" }),
+  output: process.env.DOCKER_BUILD === "true" ? "standalone" : "export",
+  images: {
+    unoptimized: true,
+  },
 };
 
 export default nextConfig;
