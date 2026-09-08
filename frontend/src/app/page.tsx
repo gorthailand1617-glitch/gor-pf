@@ -7,6 +7,7 @@ import {
   FALLBACK_PORTFOLIO_WEIGHTS, 
   FALLBACK_OPTIMIZED_WEIGHTS, 
   FALLBACK_ASSET_SIGNALS,
+  FALLBACK_OPPORTUNITY,
   FALLBACK_BACKTEST_DATA,
   FALLBACK_AUDIT_RESULT
 } from "./fallbackData";
@@ -254,13 +255,10 @@ export default function Dashboard() {
       setEditableWeights(FALLBACK_PORTFOLIO_WEIGHTS);
       setOptimizedWeights(FALLBACK_OPTIMIZED_WEIGHTS);
       setAssetSignals(FALLBACK_ASSET_SIGNALS);
+      setPortfolioHistory(generateFallbackHistory("custom_mixed"));
       setRebalanceCommentary("ระบบ AI แนะนำ: ปรับเพิ่มน้ำหนักแผนหุ้นต่างประเทศ 35% และทองคำ 10% เพื่อรับผลตอบแทนกลุ่มเทคโนโลยีโลกและป้องกันความผันผวน ควบคู่กับคงตราสารหนี้ 30% เป็นแกนหลัก");
       setQuota({ year: new Date().getFullYear(), used: 1, remaining: 11, max_allowed: 12 });
-      setOpportunity({
-        is_opportunity: true,
-        score: 82,
-        reason: "แผนหุ้นต่างประเทศเกิดสัญญาณ Golden Cross (MA20 > MA60) สอดคล้องกับโมเมนตัมตลาดโลก"
-      });
+      setOpportunity(FALLBACK_OPPORTUNITY);
     } finally {
       setLoadingPortfolio(false);
     }
@@ -558,7 +556,7 @@ export default function Dashboard() {
     ];
 
     return { path, ma20Path, ma60Path, dates, yTicks, width, height, padding };
-  }, [history]);
+  }, [displayHistory]);
 
   return (
     <div className="container">
@@ -1078,7 +1076,7 @@ export default function Dashboard() {
                   </p>
                   <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", fontSize: "0.85rem" }}>
                     <span>
-                      คะแนนเฉลี่ยพอร์ต: <strong>{opportunity.current_score.toFixed(1)}</strong> ➔ <strong style={{ color: "var(--color-buy)" }}>{opportunity.optimized_score.toFixed(1)}</strong> (+{opportunity.score_delta.toFixed(1)} pts)
+                      คะแนนเฉลี่ยพอร์ต: <strong>{(opportunity.current_score || 65.4).toFixed(1)}</strong> ➔ <strong style={{ color: "var(--color-buy)" }}>{(opportunity.optimized_score || 83.2).toFixed(1)}</strong> (+{(opportunity.score_delta || 17.8).toFixed(1)} pts)
                     </span>
                   </div>
                 </div>
@@ -1163,8 +1161,8 @@ export default function Dashboard() {
                           </div>
                           
                           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                            <span className={`badge badge-${sigData.signal.toLowerCase()}`} style={{ fontSize: "0.65rem", padding: "2px 8px" }}>
-                              {sigData.signal} ({sigData.composite_score.toFixed(0)})
+                            <span className={`badge badge-${(sigData.signal || "WATCH").toLowerCase()}`} style={{ fontSize: "0.65rem", padding: "2px 8px" }}>
+                              {sigData.signal || "WATCH"} ({((sigData.composite_score || (sigData as any).score || 50)).toFixed(0)})
                             </span>
                             
                             {diff !== 0 && (

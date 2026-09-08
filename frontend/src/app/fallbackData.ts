@@ -100,7 +100,8 @@ export const generateFallbackHistory = (planId: string) => {
     main: 108.0,
     thai_equity: 94.0,
     global_equity: 130.0,
-    thai_property: 101.0
+    thai_property: 101.0,
+    custom_mixed: 112.0
   };
   let currentNav = baseNavs[planId] || 100.0;
   const now = new Date();
@@ -108,7 +109,6 @@ export const generateFallbackHistory = (planId: string) => {
   for (let i = 60; i >= 0; i--) {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
-    // Skip weekends
     if (d.getDay() === 0 || d.getDay() === 6) continue;
 
     const drift = planId === "global_equity" ? 0.0012 : planId === "thai_equity" ? 0.0002 : 0.0006;
@@ -158,40 +158,83 @@ export const FALLBACK_OPTIMIZED_WEIGHTS: Record<string, number> = {
   gold: 0.10
 };
 
-export const FALLBACK_ASSET_SIGNALS: Record<string, { score: number; signal: string; advice: string }> = {
-  fixed_income: { score: 68, signal: "BUY_HOLD", advice: "คงสัดส่วนเป็นแกนหลักพอร์ต Yield Curve มีเสถียรภาพ" },
-  money_market: { score: 55, signal: "BUY_HOLD", advice: "รักษาไว้เพื่อสภาพคล่องรองรับการปรับสัดส่วน" },
-  thai_equity: { score: 48, signal: "WATCH", advice: "ชะลอการสะสมเพิ่ม รอสัญญาณการฟื้นตัวของกระแสเงินทุนต่างชาติ" },
-  thai_property: { score: 65, signal: "BUY_HOLD", advice: "รับเงินปันผลต่อเนื่อง สภาพคล่องระดับปกติ" },
-  global_equity: { score: 85, signal: "BUY_HOLD", advice: "โมเมนตัมแข็งแกร่ง แนะนำเพิ่มน้ำหนักตามเพดาน Life Path" },
-  global_debt: { score: 62, signal: "BUY_HOLD", advice: "ป้องกันความเสี่ยงอัตราแลกเปลี่ยน (FX Hedged 80%)" },
-  gold: { score: 78, signal: "BUY_HOLD", advice: "สินทรัพย์ปลอดภัยช่วยกระจายความเสี่ยงและป้องกันเงินเฟ้อ" }
+export const FALLBACK_ASSET_SIGNALS: Record<string, { score: number; composite_score: number; signal: string; advice: string }> = {
+  fixed_income: { score: 68, composite_score: 68, signal: "BUY_HOLD", advice: "คงสัดส่วนเป็นแกนหลักพอร์ต Yield Curve มีเสถียรภาพ" },
+  money_market: { score: 55, composite_score: 55, signal: "BUY_HOLD", advice: "รักษาไว้เพื่อสภาพคล่องรองรับการปรับสัดส่วน" },
+  thai_equity: { score: 48, composite_score: 48, signal: "WATCH", advice: "ชะลอการสะสมเพิ่ม รอสัญญาณการฟื้นตัวของกระแสเงินทุนต่างชาติ" },
+  thai_property: { score: 65, composite_score: 65, signal: "BUY_HOLD", advice: "รับเงินปันผลต่อเนื่อง สภาพคล่องระดับปกติ" },
+  global_equity: { score: 85, composite_score: 85, signal: "BUY_HOLD", advice: "โมเมนตัมแข็งแกร่ง แนะนำเพิ่มน้ำหนักตามเพดาน Life Path" },
+  global_debt: { score: 62, composite_score: 62, signal: "BUY_HOLD", advice: "ป้องกันความเสี่ยงอัตราแลกเปลี่ยน (FX Hedged 80%)" },
+  gold: { score: 78, composite_score: 78, signal: "BUY_HOLD", advice: "สินทรัพย์ปลอดภัยช่วยกระจายความเสี่ยงและป้องกันเงินเฟ้อ" }
+};
+
+export const FALLBACK_OPPORTUNITY = {
+  is_opportunity: true,
+  opportunity_type: "MOMENTUM_ACCELERATION",
+  reason: "แผนหุ้นต่างประเทศเกิดสัญญาณ Golden Cross (MA20 ตัดเหนือ MA60) สอดคล้องกับโมเมนตัมขาขึ้นของกลุ่มเทคโนโลยีโลก",
+  current_score: 65.4,
+  optimized_score: 83.2,
+  score_delta: 17.8,
+  optimized_weights: FALLBACK_OPTIMIZED_WEIGHTS
 };
 
 export const FALLBACK_BACKTEST_DATA = {
-  summary: {
-    cagr: 8.42,
-    sharpe_ratio: 1.45,
-    max_drawdown: -6.85,
-    win_rate: 68.5,
-    total_rebalances: 18,
-    benchmark_cagr: 4.15,
-    alpha: 4.27
+  metrics: {
+    strategy: {
+      name: "Gor.PF AI Dynamic Optimizer",
+      cagr: 8.42,
+      mdd: -6.85,
+      sharpe: 1.45,
+      total_return: 64.8
+    },
+    main_plan: {
+      name: "Plan หลัก กบข. (Benchmark)",
+      cagr: 3.85,
+      mdd: -8.92,
+      sharpe: 0.72,
+      total_return: 26.4
+    },
+    global_equity: {
+      name: "Plan หุ้นต่างประเทศ 100%",
+      cagr: 12.10,
+      mdd: -19.40,
+      sharpe: 0.88,
+      total_return: 98.2
+    }
   },
-  crisis_performance: [
-    { period: "COVID-19 Shock (2020)", ai_return: -4.8, benchmark_return: -18.6, outperformance: "+13.8%" },
-    { period: "Global Rate Hikes (2022)", ai_return: +2.1, benchmark_return: -11.2, outperformance: "+13.3%" },
-    { period: "Tech Bull Run (2023-2024)", ai_return: +19.4, benchmark_return: +7.8, outperformance: "+11.6%" },
-    { period: "Current Market (2025-2026)", ai_return: +8.5, benchmark_return: +3.2, outperformance: "+5.3%" }
+  crisis_scenarios: [
+    {
+      crisis_name: "COVID-19 Market Crash (มี.ค. 2020)",
+      description: "ตลาดหุ้นทั่วโลกเทขายรุนแรงจากความตื่นตระหนกโรคระบาด",
+      strategy_drawdown: "-4.8%",
+      equity_drawdown: "-33.9%",
+      protection_mechanism: "ระบบตรวจพบ Volatility Spike และตัดสัดส่วนเข้าตราสารหนี้ระยะสั้นก่อนตลาดทิ้งดิ่ง"
+    },
+    {
+      crisis_name: "Global Inflation & Rate Hikes (ปี 2022)",
+      description: "ธนาคารกลางสหรัฐฯ (Fed) ขึ้นดอกเบี้ยเร็วที่สุดในรอบ 40 ปี",
+      strategy_drawdown: "+2.1%",
+      equity_drawdown: "-18.1%",
+      protection_mechanism: "Dynamic FX Hedging 90% ควบคู่กับเพิ่มน้ำหนักสินทรัพย์ทองคำช่วยป้องกันเงินเฟ้อ"
+    },
+    {
+      crisis_name: "Global Tech Rally (2023 - 2024)",
+      description: "คลื่นเทคโนโลยี AI หนุนตลาดหุ้นสหรัฐฯ ปรับตัวขึ้นทำ All-Time High",
+      strategy_drawdown: "+19.4%",
+      equity_drawdown: "+24.2%",
+      protection_mechanism: "AI Trigger ตรวจจับ Golden Cross และเร่งน้ำหนักหุ้นต่างประเทศเต็มเพดาน Life Path"
+    }
   ]
 };
 
 export const FALLBACK_AUDIT_RESULT = {
+  is_valid: true,
   status: "verified",
-  chain_length: 128,
-  latest_block_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  previous_block_hash: "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4",
+  total_entries: 142,
   tamper_detected: false,
+  tampered_count: 0,
+  latest_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  hash_algorithm: "SHA-256 Chained Hash",
   verified_at: new Date().toISOString(),
   message: "ความสมบูรณ์ของบันทึกประวัติการปรับพอร์ต (Audit Trail) ผ่านการตรวจสอบแบบ Cryptographic Hash Chaining ถูกต้อง 100%"
 };
