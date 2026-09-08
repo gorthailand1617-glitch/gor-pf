@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+tests
+frontend
+.env
+run_dev.bat
+deploy_gcp.bat
+deploy_gcp.sh
+*.md
