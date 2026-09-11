@@ -68,6 +68,8 @@ class TelegramWebhookHandler:
 
         if cmd in ["/ping", "/check"]:
             self._handle_ping(chat_id)
+        elif cmd in ["/daily", "/summary", "/briefing"]:
+            self._handle_daily(chat_id)
         elif cmd in ["/status"]:
             self._handle_status(chat_id)
         elif cmd in ["/quota"]:
@@ -87,11 +89,12 @@ class TelegramWebhookHandler:
             fallback = (
                 "🤖 ขออภัย ระบบไม่รู้จักคำสั่งนี้\n\n"
                 "💡 ท่านสามารถพิมพ์คำสั่งดังนี้:\n"
-                "👉 `/ping` : เช็คว่าระบบทำงานอยู่หรือไม่\n"
-                "👉 `/status` : ดูสัญญาณตลาดและคะแนนพอร์ต\n"
-                "👉 `/quota` : เช็คสิทธิ์เปลี่ยนแผน กบข. ปีนี้ (12 ครั้ง/ปี)\n"
+                "👉 `/daily` : สรุปสภาวะตลาด กบข. ประจำวันแบบละเอียด\n"
+                "👉 `/status` : ดูสัญญาณตลาดและคะแนนทั้ง 7 แผน\n"
                 "👉 `/opportunity` : เช็คโอกาสทำกำไรและคำแนะนำปรับพอร์ต\n"
-                "👉 `/sync` : สั่งประมวลผลข้อมูลตลาดวันนี้ใหม่ทันที"
+                "👉 `/quota` : เช็คสิทธิ์เปลี่ยนแผน กบข. ปีนี้ (12 ครั้ง/ปี)\n"
+                "👉 `/sync` : สั่งประมวลผลข้อมูลตลาดวันนี้ใหม่ทันที\n"
+                "👉 `/ping` : เช็คสถานะการทำงานของระบบ"
             )
             self.send_reply(chat_id, fallback)
 
@@ -108,8 +111,34 @@ class TelegramWebhookHandler:
         )
         self.send_reply(chat_id, msg)
 
+    def _handle_daily(self, chat_id: str):
+        self.send_reply(chat_id, "⏳ กำลังประมวลผลสรุปสภาวะตลาด กบข. ประจำวัน กรุณารอสักครู่...")
+        try:
+            from data_pipeline.pipeline import GPFPipeline
+            pipeline = GPFPipeline(sheets_client=self.sheets)
+            pipeline.run_daily_update(persist=False)
+            results = pipeline.latest_results
+            if results:
+                from telegram_bot.notifier import TelegramBotNotifier
+                notifier = TelegramBotNotifier(bot_token=self.bot_token, chat_id=chat_id)
+                notifier.send_daily_summary(results)
+            else:
+                self.send_reply(chat_id, "⚠️ ไม่สามารถประมวลผลข้อมูลตลาดได้ในขณะนี้")
+        except Exception as e:
+            logger.error(f"Error handling /daily command: {e}")
+            self.send_reply(chat_id, f"⚠️ เกิดข้อผิดพลาดในการประมวลผลสรุปตลาด: {e}")
+
     def _handle_status(self, chat_id: str):
         signals = self.sheets.get_latest_signals()
+        if not signals:
+            try:
+                from data_pipeline.pipeline import GPFPipeline
+                pipeline = GPFPipeline(sheets_client=self.sheets)
+                pipeline.run_daily_update(persist=False)
+                signals = {r["plan_id"]: r for r in pipeline.latest_results}
+            except Exception as e:
+                logger.error(f"Error computing signals fallback: {e}")
+
         if not signals:
             self.send_reply(chat_id, "⚠️ ยังไม่มีข้อมูลสัญญาณในระบบ กรุณารอระบบรันตามรอบเวลา หรือพิมพ์ `/sync` เพื่อดึงข้อมูลใหม่")
             return

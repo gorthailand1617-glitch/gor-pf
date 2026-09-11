@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ class TelegramBotNotifier:
             logger.info("Skipping Telegram alert: bot disabled or no transitions.")
             return
 
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         for trans in transitions:
             plan_name = trans["plan_name"]
             old_signal = trans["old_signal"]
@@ -70,6 +72,71 @@ class TelegramBotNotifier:
                         logger.error(f"Telegram API failed for {target_id}: {res.status_code} - {res.text}")
                 except Exception as e:
                     logger.error(f"Error calling Telegram API for {target_id}: {e}")
+
+    def send_daily_summary(self, results: List[Dict[str, Any]], commentary: Optional[str] = None) -> bool:
+        """Sends daily market summary of all GPF plans to Telegram subscribers."""
+        if not self.enabled or not results:
+            logger.info("Skipping daily summary: bot disabled or no results.")
+            return False
+
+        today_str = datetime.now().strftime("%d/%m/%Y")
+        lines = [
+            f"📊 *[รายงานสรุปสภาวะตลาด กบข. ประจำวัน]*",
+            f"📅 ประจำวันที่: `{today_str}`",
+            "───────────────────",
+            "📌 *สรุปสัญญาณและคะแนนทั้ง 7 แผน:*"
+        ]
+
+        emojis = {
+            "BUY_HOLD": "🟢 ซื้อ/ถือต่อ",
+            "WATCH": "🟡 เฝ้าระวัง",
+            "REDUCE": "🔴 ลดสัดส่วน"
+        }
+
+        plan_names = {
+            "fixed_income": "ตราสารหนี้",
+            "money_market": "ตลาดเงิน",
+            "thai_equity": "หุ้นไทย",
+            "thai_property": "อสังหาฯ ไทย",
+            "global_equity": "หุ้นต่างประเทศ",
+            "global_debt": "ตราสารหนี้ ตปท.",
+            "gold": "ทองคำ"
+        }
+
+        top_commentary = []
+        for r in results:
+            p_id = r.get("plan_id", "")
+            p_name = plan_names.get(p_id, r.get("plan_name", p_id))
+            sig = r.get("signal", "WATCH")
+            score = float(r.get("composite_score", 50.0))
+            sig_text = emojis.get(sig, sig)
+            daily_ret = r.get("daily_return")
+            ret_text = ""
+            if daily_ret is not None:
+                ret_pct = float(daily_ret) * 100
+                ret_icon = "🔺" if ret_pct > 0 else ("🔻" if ret_pct < 0 else "▫️")
+                ret_text = f" ({ret_icon}{ret_pct:+.2f}%)"
+            lines.append(f"• *{p_name}*: {sig_text} `{score:.1f}/100`{ret_text}")
+
+            comm = r.get("thai_commentary", "").strip()
+            if comm and len(top_commentary) < 2 and p_id in ["thai_equity", "global_equity", "gold"]:
+                first_line = comm.split("\n")[0].strip()
+                if first_line:
+                    top_commentary.append(f"• *{p_name}*: {first_line}")
+
+        lines.append("───────────────────")
+        if commentary:
+            lines.append(f"🧠 *มุมมองสภาวะตลาดโดย AI:*\n{commentary}")
+        elif top_commentary:
+            lines.append("🧠 *ไฮไลต์มุมมองสภาวะตลาด (AI):*")
+            lines.extend(top_commentary)
+
+        dashboard_url = os.getenv("DASHBOARD_URL", "http://localhost:3000")
+        lines.append(f"\n🔗 [เปิดเว็บ Dashboard พอร์ต กบข.]({dashboard_url})")
+        lines.append("⚠️ _ข้อมูลนี้เป็นการวิเคราะห์เชิงสถิติ ไม่ใช่คำแนะนำทางการเงินอย่างเป็นทางการ_")
+
+        msg = "\n".join(lines)
+        return self.send_message(msg)
 
     def get_recipients(self) -> List[str]:
         """Returns all subscriber chat IDs, guaranteeing default chat_id is included."""

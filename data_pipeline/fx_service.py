@@ -167,3 +167,6 @@ class FXService:
         # Compound from the first base price
         thb_prices = (1.0 + thb_returns).cumprod() * usd_prices.iloc[0]
         return thb_prices
+
+    # Alias for compatibility
+    compute_fx_adjusted_price_series = adjust_price_series_for_fx

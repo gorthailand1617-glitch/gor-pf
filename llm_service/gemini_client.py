@@ -24,7 +24,7 @@ class LLMAnalysisResponse(BaseModel):
 class GeminiAnalysisService:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        self.model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
         self.enabled = False
         
         if not self.api_key:
@@ -74,24 +74,32 @@ Analyze the following asset allocation state and news headlines for the GPF Plan
 Ensure the return matches the JSON response schema.
 """
 
-        try:
-            model = genai.GenerativeModel(self.model_name)
-            
-            # Request structured JSON matching the Pydantic schema
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(
-                    response_mime_type="application/json",
-                    response_schema=LLMAnalysisResponse
+        import time
+        model = genai.GenerativeModel(self.model_name)
+        
+        for attempt in range(2):
+            try:
+                # Request structured JSON matching the Pydantic schema
+                response = model.generate_content(
+                    prompt,
+                    generation_config=genai.GenerationConfig(
+                        response_mime_type="application/json",
+                        response_schema=LLMAnalysisResponse
+                    )
                 )
-            )
-            
-            result_dict = json.loads(response.text)
-            logger.info(f"Successfully received analysis from Gemini: {result_dict}")
-            return result_dict
-        except Exception as e:
-            logger.error(f"Error generating content from Gemini: {e}", exc_info=True)
-            return self._get_fallback_response("api_error")
+                
+                result_dict = json.loads(response.text)
+                logger.info(f"Successfully received analysis from Gemini: {result_dict}")
+                return result_dict
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg and attempt == 0:
+                    logger.warning("Gemini free tier rate limit reached, waiting 11s before retrying...")
+                    time.sleep(11)
+                    continue
+                logger.error(f"Error generating content from Gemini: {e}")
+                return self._get_fallback_response("api_error")
+        return self._get_fallback_response("api_error")
 
     def _get_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Helper to return fallback default values when LLM call fails."""

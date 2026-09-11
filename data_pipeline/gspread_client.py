@@ -1,9 +1,12 @@
 import os
 import logging
 import gspread
+from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 

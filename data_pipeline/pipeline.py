@@ -107,11 +107,12 @@ class GPFPipeline:
             except Exception as e:
                 logger.warning(f"Could not read plan names from Config worksheet: {e}")
         
-        # Fallback to default configs if empty
-        if not plan_weights:
-            logger.info("Using default plan configurations (Sheets not connected or config empty).")
-            plan_weights = {p_id: details["weights"] for p_id, details in DEFAULT_PLANS.items()}
-            plan_names = {p_id: details["name_th"] for p_id, details in DEFAULT_PLANS.items()}
+        # Supplement missing default plans so all 7 GPF asset plans are always monitored
+        for p_id, details in DEFAULT_PLANS.items():
+            if p_id not in plan_weights:
+                plan_weights[p_id] = details["weights"]
+            if p_id not in plan_names:
+                plan_names[p_id] = details["name_th"]
 
         # Get unique tickers
         all_tickers = set()

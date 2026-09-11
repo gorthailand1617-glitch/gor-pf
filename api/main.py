@@ -189,6 +189,13 @@ def trigger_daily_update(
     def task_runner():
         try:
             transitions = pipeline.run_daily_update()
+            
+            # 1. Daily Market Briefing
+            if pipeline.latest_results and tg_notifier.enabled:
+                logger.info("Broadcasting daily market summary from sync trigger...")
+                tg_notifier.send_daily_summary(pipeline.latest_results)
+
+            # 2. Transition Alerts
             if transitions:
                 # LINE Alerts
                 if sheets.is_connected() and notifier.enabled:
@@ -201,7 +208,7 @@ def trigger_daily_update(
                     logger.info(f"Broadcasting {len(transitions)} transition(s) via Telegram Bot.")
                     tg_notifier.send_transition_alert(transitions)
 
-            # Check and dispatch opportunistic profit rebalancing alert
+            # 3. Check and dispatch opportunistic profit rebalancing alert
             try:
                 from api.scheduler import check_and_notify_profit_opportunity
                 check_and_notify_profit_opportunity(sheets, pipeline, notifier, tg_notifier)

@@ -206,6 +206,13 @@ def run_scheduled_pipeline():
         
         transitions = pipeline.run_daily_update()
         
+        # 1. Always broadcast Daily Market Summary at 18:30 ICT
+        if pipeline.latest_results:
+            logger.info("Broadcasting scheduled daily market summary...")
+            if tg_notifier.enabled:
+                tg_notifier.send_daily_summary(pipeline.latest_results)
+
+        # 2. Broadcast transition alerts if any asset plan flipped its signal
         if transitions:
             # LINE Alerts
             if sheets.is_connected() and notifier.enabled:
@@ -218,7 +225,7 @@ def run_scheduled_pipeline():
                 logger.info(f"Broadcasting {len(transitions)} transition(s) via Telegram Bot.")
                 tg_notifier.send_transition_alert(transitions)
 
-        # Evaluate profit opportunity and quota
+        # 3. Evaluate profit opportunity and quota
         check_and_notify_profit_opportunity(sheets, pipeline, notifier, tg_notifier)
     except Exception as e:
         logger.error(f"Error running scheduled pipeline job: {e}", exc_info=True)

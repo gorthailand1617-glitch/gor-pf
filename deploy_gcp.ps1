@@ -67,7 +67,9 @@ Write-Host "  STEP 1: Deploy Backend (FastAPI) to Cloud Run" -ForegroundColor Cy
 Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host ""
 
-$backendEnvString = "PORT=8080,HOST=0.0.0.0,RELOAD=false,SPREADSHEET_ID=$spreadsheetId,GEMINI_API_KEY=$geminiApiKey,LINE_CHANNEL_ACCESS_TOKEN=$lineToken,LINE_CHANNEL_SECRET=$lineSecret,TELEGRAM_BOT_TOKEN=$tgToken,TELEGRAM_CHAT_ID=$tgChatId"
+$geminiModel = if ($envVars.ContainsKey("GEMINI_MODEL")) { $envVars["GEMINI_MODEL"] } else { "gemini-3.6-flash" }
+
+$backendEnvString = "PORT=8080,HOST=0.0.0.0,RELOAD=false,SPREADSHEET_ID=$spreadsheetId,GEMINI_API_KEY=$geminiApiKey,GEMINI_MODEL=$geminiModel,LINE_CHANNEL_ACCESS_TOKEN=$lineToken,LINE_CHANNEL_SECRET=$lineSecret,TELEGRAM_BOT_TOKEN=$tgToken,TELEGRAM_CHAT_ID=$tgChatId"
 
 Write-Host "[*] Building and deploying backend image..." -ForegroundColor Yellow
 gcloud run deploy gpf-backend `
