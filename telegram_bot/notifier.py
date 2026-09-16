@@ -69,12 +69,26 @@ class TelegramBotNotifier:
                     if res.status_code == 200:
                         logger.info(f"Successfully sent transition alert to Telegram chat: {target_id}")
                     else:
-                        logger.error(f"Telegram API failed for {target_id}: {res.status_code} - {res.text}")
+                        logger.warning(f"Telegram Markdown send failed ({res.status_code}): {res.text}. Retrying plain text...")
+                        payload_plain = {
+                            "chat_id": target_id,
+                            "text": message.replace("*", "").replace("`", "").replace("_", "")
+                        }
+                        res_plain = requests.post(url, json=payload_plain, timeout=10)
+                        if res_plain.status_code == 200:
+                            logger.info(f"Successfully sent transition alert (plain) to: {target_id}")
+                        else:
+                            logger.error(f"Telegram API failed for {target_id}: {res_plain.status_code} - {res_plain.text}")
                 except Exception as e:
                     logger.error(f"Error calling Telegram API for {target_id}: {e}")
 
-    def send_daily_summary(self, results: List[Dict[str, Any]], commentary: Optional[str] = None) -> bool:
-        """Sends daily market summary of all GPF plans to Telegram subscribers."""
+    def send_daily_summary(
+        self, 
+        results: List[Dict[str, Any]], 
+        commentary: Optional[str] = None, 
+        target_chat_id: Optional[str] = None
+    ) -> bool:
+        """Sends daily market summary of all GPF plans to Telegram subscribers or a specific chat."""
         if not self.enabled or not results:
             logger.info("Skipping daily summary: bot disabled or no results.")
             return False
@@ -136,7 +150,7 @@ class TelegramBotNotifier:
         lines.append("⚠️ _ข้อมูลนี้เป็นการวิเคราะห์เชิงสถิติ ไม่ใช่คำแนะนำทางการเงินอย่างเป็นทางการ_")
 
         msg = "\n".join(lines)
-        return self.send_message(msg)
+        return self.send_message(msg, target_chat_id=target_chat_id)
 
     def get_recipients(self) -> List[str]:
         """Returns all subscriber chat IDs, guaranteeing default chat_id is included."""
@@ -152,14 +166,14 @@ class TelegramBotNotifier:
             pass
         return list(dict.fromkeys(recipients))
 
-    def send_message(self, text: str) -> bool:
-        """Sends a generic text message to all subscribers using the Telegram Bot API."""
+    def send_message(self, text: str, target_chat_id: Optional[str] = None) -> bool:
+        """Sends a generic text message to subscribers or a specific target chat."""
         if not self.enabled:
             logger.info("Telegram Bot disabled. Skipping message.")
             return False
             
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        recipients = self.get_recipients()
+        recipients = [str(target_chat_id)] if target_chat_id else self.get_recipients()
         any_success = False
 
         for target_id in recipients:
@@ -172,8 +186,20 @@ class TelegramBotNotifier:
                 res = requests.post(url, json=payload, timeout=10)
                 if res.status_code == 200:
                     any_success = True
+                else:
+                    logger.warning(f"Telegram API Markdown failed for {target_id} ({res.status_code}): {res.text}. Retrying plain text...")
+                    payload_plain = {
+                        "chat_id": target_id,
+                        "text": text.replace("*", "").replace("`", "").replace("_", "")
+                    }
+                    res_plain = requests.post(url, json=payload_plain, timeout=10)
+                    if res_plain.status_code == 200:
+                        any_success = True
+                    else:
+                        logger.error(f"Telegram API failed plain text for {target_id}: {res_plain.status_code} - {res_plain.text}")
             except Exception as e:
                 logger.error(f"Error calling Telegram API for {target_id}: {e}")
 
         return any_success
+
 

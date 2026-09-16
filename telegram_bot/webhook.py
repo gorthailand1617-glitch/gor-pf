@@ -36,7 +36,16 @@ class TelegramWebhookHandler:
         }
         try:
             res = requests.post(url, json=payload, timeout=10)
-            return res.status_code == 200
+            if res.status_code == 200:
+                return True
+            # Fallback retry without Markdown
+            logger.warning(f"send_reply Markdown failed ({res.status_code}): {res.text}. Retrying plain text...")
+            plain_payload = {
+                "chat_id": chat_id,
+                "text": text.replace("*", "").replace("`", "").replace("_", "")
+            }
+            res_plain = requests.post(url, json=plain_payload, timeout=10)
+            return res_plain.status_code == 200
         except Exception as e:
             logger.error(f"Error replying to Telegram chat {chat_id}: {e}")
             return False
@@ -112,18 +121,28 @@ class TelegramWebhookHandler:
         self.send_reply(chat_id, msg)
 
     def _handle_daily(self, chat_id: str):
-        self.send_reply(chat_id, "⏳ กำลังประมวลผลสรุปสภาวะตลาด กบข. ประจำวัน กรุณารอสักครู่...")
         try:
-            from data_pipeline.pipeline import GPFPipeline
-            pipeline = GPFPipeline(sheets_client=self.sheets)
-            pipeline.run_daily_update(persist=False)
-            results = pipeline.latest_results
+            from telegram_bot.notifier import TelegramBotNotifier
+            notifier = TelegramBotNotifier(bot_token=self.bot_token, chat_id=chat_id)
+
+            # 1. Check if we already have today's / latest signals in Google Sheets
+            signals_dict = self.sheets.get_latest_signals()
+            results = list(signals_dict.values()) if signals_dict else []
+
+            # 2. If no saved signals exist, calculate dynamically
+            if not results:
+                self.send_reply(chat_id, "⏳ กำลังประมวลผลสรุปสภาวะตลาด กบข. ประจำวัน กรุณารอสักครู่...")
+                from data_pipeline.pipeline import GPFPipeline
+                pipeline = GPFPipeline(sheets_client=self.sheets)
+                pipeline.run_daily_update(persist=False)
+                results = pipeline.latest_results
+
             if results:
-                from telegram_bot.notifier import TelegramBotNotifier
-                notifier = TelegramBotNotifier(bot_token=self.bot_token, chat_id=chat_id)
-                notifier.send_daily_summary(results)
+                success = notifier.send_daily_summary(results, target_chat_id=chat_id)
+                if not success:
+                    self.send_reply(chat_id, "⚠️ ไม่สามารถจัดส่งสรุปตลาดได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง")
             else:
-                self.send_reply(chat_id, "⚠️ ไม่สามารถประมวลผลข้อมูลตลาดได้ในขณะนี้")
+                self.send_reply(chat_id, "⚠️ ไม่สามารถประมวลผลข้อมูลตลาดได้ในขณะนี้ กรุณาลองพิมพ์ `/sync` เพื่อดึงข้อมูลใหม่")
         except Exception as e:
             logger.error(f"Error handling /daily command: {e}")
             self.send_reply(chat_id, f"⚠️ เกิดข้อผิดพลาดในการประมวลผลสรุปตลาด: {e}")
@@ -288,7 +307,7 @@ def start_telegram_polling(handler: Optional[TelegramWebhookHandler] = None):
                     updates = res.json().get("result", [])
                     for u in updates:
                         offset = u["update_id"] + 1
-                        handler.process_update(u)
+                        threading.Thread(target=handler.process_update, args=(u,), daemon=True).start()
                 else:
                     time.sleep(3)
             except Exception as e:

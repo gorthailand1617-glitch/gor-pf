@@ -44,9 +44,11 @@ yarn-error.log*
 
 # 4. Local Databases & Logs
 data/*.db
+data/*.db*
 data/*.sqlite
 data/*.sqlite3
 *.db
+*.db*
 *.sqlite
 *.sqlite3
 *.log
