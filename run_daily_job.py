@@ -19,16 +19,24 @@ logger = logging.getLogger("daily_job")
 def main():
     logger.info("Starting Daily Market Sync & Broadcast Job...")
     try:
+        from datetime import datetime
         from data_pipeline.gspread_client import GPFSpreadsheetClient
         from data_pipeline.pipeline import GPFPipeline
         from line_bot.notifier import LINEBotNotifier
         from telegram_bot.notifier import TelegramBotNotifier
-        from api.scheduler import check_and_notify_profit_opportunity
+        from api.scheduler import check_and_notify_profit_opportunity, run_weekly_alerts_pipeline
 
         sheets = GPFSpreadsheetClient()
-        pipeline = GPFPipeline(sheets_client=sheets)
         notifier = LINEBotNotifier()
         tg_notifier = TelegramBotNotifier()
+
+        # Check if requested specifically for weekly or today is Saturday
+        is_saturday = datetime.now().weekday() == 5
+        if "--weekly" in sys.argv or is_saturday:
+            logger.info("Triggering Saturday weekly performance/rebalance alerts...")
+            run_weekly_alerts_pipeline()
+
+        pipeline = GPFPipeline(sheets_client=sheets)
 
         # Run pipeline update (persist to Google Sheets if connected)
         transitions = pipeline.run_daily_update(persist=sheets.is_connected())

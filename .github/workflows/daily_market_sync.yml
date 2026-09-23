@@ -2,10 +2,24 @@ name: Daily GPF Market Sync & Telegram Broadcast
 
 on:
   schedule:
-    # Runs at 11:15 UTC every Monday to Friday (18:15 ICT Thailand time)
-    # Using 15 minutes past the hour avoids peak GitHub Actions queue delays (00 and 30 minutes)
+    # 1. Weekdays (Mon-Fri) at 11:15 UTC (18:15 ICT Thailand time) - Daily Market Summary
     - cron: '15 11 * * 1-5'
-  workflow_dispatch: # Allows manual trigger from GitHub Actions tab anytime
+    # 2. Saturdays at 03:00 UTC (10:00 ICT Thailand time) - Weekly Performance & Rebalance Alert
+    - cron: '0 3 * * 6'
+  workflow_dispatch:
+    inputs:
+      job_type:
+        description: 'Type of job to execute'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - daily
+          - weekly
+
+concurrency:
+  group: gpf-daily-job
+  cancel-in-progress: false
 
 jobs:
   daily-market-sync:
@@ -36,13 +50,19 @@ jobs:
             echo "Service account credentials created from GitHub secret."
           fi
 
-      - name: Run Daily Market Sync & Broadcast
+      - name: Run Market Sync & Broadcast
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_CHANNEL_SECRET: ${{ secrets.LINE_CHANNEL_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: 'gemini-3.6-flash'
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_APPLICATION_CREDENTIALS: 'service_account.json'
         run: |
-          python run_daily_job.py
+          if [ "${{ inputs.job_type }}" = "weekly" ]; then
+            python run_daily_job.py --weekly
+          else
+            python run_daily_job.py
+          fi
