@@ -2,8 +2,9 @@ name: Daily GPF Market Sync & Telegram Broadcast
 
 on:
   schedule:
-    # Runs at 11:30 UTC every Monday to Friday (which is 18:30 ICT Thailand time)
-    - cron: '30 11 * * 1-5'
+    # Runs at 11:15 UTC every Monday to Friday (18:15 ICT Thailand time)
+    # Using 15 minutes past the hour avoids peak GitHub Actions queue delays (00 and 30 minutes)
+    - cron: '15 11 * * 1-5'
   workflow_dispatch: # Allows manual trigger from GitHub Actions tab anytime
 
 jobs:
