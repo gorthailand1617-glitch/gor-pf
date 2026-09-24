@@ -1,8 +1,13 @@
 import os
 import logging
-import gspread
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+except ImportError:
+    gspread = None
+    Credentials = None
+
 from dotenv import load_dotenv
-from google.oauth2.service_account import Credentials
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 

@@ -297,12 +297,24 @@ class OpportunityDetector:
         adj_lines = []
         for adj in opportunity["adjustments"]:
             pct = adj["diff_pct"]
+            curr_pct = adj["current_weight"] * 100
+            target_pct = adj["target_weight"] * 100
             if pct > 0:
-                adj_lines.append(f"📈 เพิ่ม {adj['asset_name']}: +{pct:.1f}%")
+                adj_lines.append(f"📈 *{adj['asset_name']}:* เดิม {curr_pct:.1f}% ➔ *ปรับเพิ่มเป็น {target_pct:.1f}%* (+{pct:.1f}%)")
             else:
-                adj_lines.append(f"📉 ลด {adj['asset_name']}: {pct:.1f}%")
+                adj_lines.append(f"📉 *{adj['asset_name']}:* เดิม {curr_pct:.1f}% ➔ *ปรับลดเหลือ {target_pct:.1f}%* ({pct:.1f}%)")
 
         adj_text = "\n".join(adj_lines) if adj_lines else "• คงสัดส่วนเดิม"
+
+        # Summary of all target weights for My GPF app
+        target_lines = []
+        opt_weights = opportunity.get("optimized_weights", {})
+        for a_key, a_name in ASSET_NAMES.items():
+            tw = opt_weights.get(a_key, 0.0) * 100
+            if tw > 0:
+                target_lines.append(f"• {a_name}: `{tw:.1f}%`")
+
+        target_summary_text = "\n".join(target_lines) if target_lines else "• ไม่มีการเปลี่ยนแปลง"
 
         msg = (
             f"{badge}\n\n"
@@ -313,11 +325,13 @@ class OpportunityDetector:
             f"📈 *ศักยภาพพอร์ตภาพรวม:* "
             f"{curr_score:.1f} ➔ *{opt_score:.1f}* "
             f"({'+' if score_delta >= 0 else ''}{score_delta:.1f} คะแนน)\n\n"
-            f"🔄 *สัดส่วนที่แนะนำปรับเปลี่ยน:*\n"
+            f"🔄 *การเปลี่ยนแปลงสัดส่วน:*\n"
             f"{adj_text}\n\n"
+            f"📋 *สัดส่วนเป้าหมาย (สำหรับกรอกในแอป My GPF):*\n"
+            f"{target_summary_text}\n\n"
             f"⚡ *ขั้นตอนการดำเนินการ:*\n"
-            f"1. เข้าแอป My GPF (กบข.) แล้วปรับสัดส่วนตามคำแนะนำข้างต้น\n"
-            f"2. กดยืนยันใน Dashboard เพื่อบันทึกประวัติและนับโควตา:\n"
+            f"1. เข้าแอป My GPF แล้วระบุสัดส่วนเป้าหมายตามรายการข้างต้น\n"
+            f"2. กดยืนยันใน Dashboard หรือพิมพ์ `/confirm` เพื่อบันทึกประวัติ:\n"
             f"🔗 [เปิด Dashboard กดยืนยันปรับแผน]({dashboard_url})\n\n"
             f"⚠️ _หมายเหตุ: เป็นการประมวลผลเชิงปริมาณเพื่อช่วยสนับสนุนการตัดสินใจของท่าน_"
         )

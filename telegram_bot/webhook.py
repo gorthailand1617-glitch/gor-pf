@@ -4,15 +4,48 @@ import requests
 from datetime import datetime
 from typing import Dict, Any, Optional
 
+import re
+import json
 from data_pipeline.gspread_client import GPFSpreadsheetClient
-from quant_engine.rebalance_opportunity import OpportunityDetector
+from quant_engine.rebalance_opportunity import OpportunityDetector, ASSET_NAMES
+from llm_service.gemini_client import GeminiAnalysisService
 
 logger = logging.getLogger(__name__)
 
+# Thai alias mapping for assets
+ASSET_ALIASES = {
+    "ทองคำ": "gold",
+    "ทอง": "gold",
+    "gold": "gold",
+    "หุ้นต่างประเทศ": "global_equity",
+    "หุ้นตปท": "global_equity",
+    "หุ้นนอก": "global_equity",
+    "หุ้นโลก": "global_equity",
+    "global_equity": "global_equity",
+    "หุ้นไทย": "thai_equity",
+    "set": "thai_equity",
+    "thai_equity": "thai_equity",
+    "ตราสารหนี้": "fixed_income",
+    "พันธบัตร": "fixed_income",
+    "fixed_income": "fixed_income",
+    "เงินฝาก": "money_market",
+    "ตลาดเงิน": "money_market",
+    "ตราสารหนี้ระยะสั้น": "money_market",
+    "money_market": "money_market",
+    "อสังหา": "thai_property",
+    "อสังหาริมทรัพย์": "thai_property",
+    "กองทุนอสังหา": "thai_property",
+    "thai_property": "thai_property",
+    "ตราสารหนี้ต่างประเทศ": "global_debt",
+    "ตราสารหนี้ตปท": "global_debt",
+    "global_debt": "global_debt"
+}
+
 
 class TelegramWebhookHandler:
-    def __init__(self, sheets_client: Optional[GPFSpreadsheetClient] = None):
+    def __init__(self, sheets_client: Optional[GPFSpreadsheetClient] = None, gemini_client: Optional[GeminiAnalysisService] = None):
         self._sheets = sheets_client
+        self._gemini = gemini_client
         self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.allowed_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         self.enabled = bool(self.bot_token)
@@ -23,8 +56,14 @@ class TelegramWebhookHandler:
             self._sheets = GPFSpreadsheetClient()
         return self._sheets
 
-    def send_reply(self, chat_id: str, text: str) -> bool:
-        """Sends a text message back to the user via Telegram."""
+    @property
+    def gemini(self) -> GeminiAnalysisService:
+        if self._gemini is None:
+            self._gemini = GeminiAnalysisService()
+        return self._gemini
+
+    def send_reply(self, chat_id: str, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> bool:
+        """Sends a text message back to the user via Telegram with optional inline keyboard."""
         if not self.bot_token:
             return False
 
@@ -34,6 +73,9 @@ class TelegramWebhookHandler:
             "text": text,
             "parse_mode": "Markdown"
         }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+
         try:
             res = requests.post(url, json=payload, timeout=10)
             if res.status_code == 200:
@@ -44,14 +86,36 @@ class TelegramWebhookHandler:
                 "chat_id": chat_id,
                 "text": text.replace("*", "").replace("`", "").replace("_", "")
             }
+            if reply_markup:
+                plain_payload["reply_markup"] = reply_markup
             res_plain = requests.post(url, json=plain_payload, timeout=10)
             return res_plain.status_code == 200
         except Exception as e:
             logger.error(f"Error replying to Telegram chat {chat_id}: {e}")
             return False
 
+    def answer_callback_query(self, callback_query_id: str, text: Optional[str] = None):
+        """Acknowledges a callback query from an inline keyboard button."""
+        if not self.bot_token:
+            return
+        url = f"https://api.telegram.org/bot{self.bot_token}/answerCallbackQuery"
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        try:
+            requests.post(url, json=payload, timeout=5)
+        except Exception as e:
+            logger.warning(f"Error answering callback query: {e}")
+
     def process_update(self, update: Dict[str, Any]):
-        """Processes an incoming Telegram update object."""
+        """Processes an incoming Telegram update object (Message or Callback Query)."""
+        # 1. Handle Inline Button Click (callback_query)
+        callback_query = update.get("callback_query")
+        if callback_query:
+            self._handle_callback_query(callback_query)
+            return
+
+        # 2. Handle Text Message
         message = update.get("message") or update.get("edited_message")
         if not message:
             return
@@ -83,10 +147,14 @@ class TelegramWebhookHandler:
             self._handle_status(chat_id)
         elif cmd in ["/quota"]:
             self._handle_quota(chat_id)
-        elif cmd in ["/opportunity"]:
+        elif cmd in ["/opportunity", "/rebalance"]:
             self._handle_opportunity(chat_id)
-        elif cmd in ["/rebalance"]:
-            self._handle_opportunity(chat_id)
+        elif cmd in ["/myportfolio", "/myport", "/port"]:
+            self._handle_myportfolio(chat_id)
+        elif cmd in ["/setport", "/updateport"]:
+            self._handle_setport(chat_id, text)
+        elif cmd in ["/confirm"]:
+            self._handle_confirm_rebalance(chat_id)
         elif cmd in ["/sync"]:
             self._handle_sync(chat_id)
         elif cmd in ["/start", "/subscribe"]:
@@ -94,18 +162,14 @@ class TelegramWebhookHandler:
         elif cmd in ["/help"]:
             self._handle_help(chat_id)
         else:
-            # Fallback reply
-            fallback = (
-                "🤖 ขออภัย ระบบไม่รู้จักคำสั่งนี้\n\n"
-                "💡 ท่านสามารถพิมพ์คำสั่งดังนี้:\n"
-                "👉 `/daily` : สรุปสภาวะตลาด กบข. ประจำวันแบบละเอียด\n"
-                "👉 `/status` : ดูสัญญาณตลาดและคะแนนทั้ง 7 แผน\n"
-                "👉 `/opportunity` : เช็คโอกาสทำกำไรและคำแนะนำปรับพอร์ต\n"
-                "👉 `/quota` : เช็คสิทธิ์เปลี่ยนแผน กบข. ปีนี้ (12 ครั้ง/ปี)\n"
-                "👉 `/sync` : สั่งประมวลผลข้อมูลตลาดวันนี้ใหม่ทันที\n"
-                "👉 `/ping` : เช็คสถานะการทำงานของระบบ"
-            )
-            self.send_reply(chat_id, fallback)
+            # Check if user says something like "ตั้งพอร์ต..." or "พอร์ตฉัน..."
+            if text.startswith("ตั้งพอร์ต") or text.startswith("ปรับพอร์ต"):
+                self._handle_setport(chat_id, text)
+            elif any(w in text for w in ["พอร์ตฉัน", "พอร์ตของฉัน", "ดูพอร์ต", "ถืออะไร"]):
+                self._handle_myportfolio(chat_id)
+            else:
+                # Conversational AI fallback via Gemini
+                self._handle_ai_chat(chat_id, text)
 
     def _handle_ping(self, chat_id: str):
         now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
@@ -221,6 +285,19 @@ class TelegramWebhookHandler:
         dashboard_url = os.getenv("DASHBOARD_URL", "http://localhost:3000")
         if opp["is_opportunity"]:
             msg = detector.format_alert_message(opp, dashboard_url=dashboard_url)
+            # Add interactive inline buttons
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": "📋 ดูสัดส่วน My GPF", "callback_data": "btn_mygpf_weights"},
+                        {"text": "💡 ทำไมต้องปรับ?", "callback_data": "btn_why_rebalance"}
+                    ],
+                    [
+                        {"text": "✅ ฉันปรับใน กบข. เรียบร้อยแล้ว", "callback_data": "btn_confirm_rebalance"}
+                    ]
+                ]
+            }
+            self.send_reply(chat_id, msg, reply_markup=reply_markup)
         else:
             msg = (
                 f"ℹ️ *[สถานะการวิเคราะห์โอกาสการลงทุน]*\n\n"
@@ -228,7 +305,242 @@ class TelegramWebhookHandler:
                 f"📊 สิทธิ์คงเหลือปีนี้: *{quota['remaining']}/{quota['max_allowed']} ครั้ง*\n"
                 f"คะแนนพอร์ตปัจจุบันอยู่ในเกณฑ์ที่สมดุล ระบบกำลังติดตามการเคลื่อนไหวของตลาดอย่างต่อเนื่องครับ"
             )
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "💼 ดูพอร์ตปัจจุบันของฉัน", "callback_data": "btn_view_my_port"}]
+                ]
+            }
+            self.send_reply(chat_id, msg, reply_markup=reply_markup)
+
+    def _handle_myportfolio(self, chat_id: str):
+        """Displays user's current saved portfolio allocation and calculated health score."""
+        user_id = "client_user"
+        weights = self.sheets.get_user_mixed_portfolio(user_id)
+        signals = self.sheets.get_latest_signals()
+        quota = self.sheets.get_annual_quota_status(user_id)
+
+        detector = OpportunityDetector(max_rebalances=12)
+        curr_score = detector.calculate_weighted_score(weights, signals) if signals else 50.0
+
+        lines = [
+            "💼 *[สัดส่วนพอร์ต กบข. ปัจจุบันของคุณในระบบ]*\n",
+            f"📈 *คะแนนสุขภาพพอร์ต:* `{curr_score:.1f} / 100.0`",
+            f"📊 *โควตาเปลี่ยนแผนปี {quota['year']}:* ใช้ไป {quota['used']}/{quota['max_allowed']} (เหลือ {quota['remaining']} ครั้ง)\n",
+            "📌 *สัดส่วนการถือครอง:*"
+        ]
+
+        emojis = {"BUY_HOLD": "🟢", "WATCH": "🟡", "REDUCE": "🔴"}
+        for asset_key, asset_name in ASSET_NAMES.items():
+            w = weights.get(asset_key, 0.0) * 100
+            sig_data = signals.get(asset_key, {})
+            sig = sig_data.get("signal", "WATCH")
+            emoji = emojis.get(sig, "⚪")
+            lines.append(f"• {asset_name}: *{w:.1f}%* {emoji} `{sig}`")
+
+        lines.append("\n💡 *วิธีแก้ไขสัดส่วนให้ตรงกับแอป My GPF:*")
+        lines.append("พิมพ์: `/setport ทองคำ 10, หุ้นนอก 30, ตราสารหนี้ 40, ตลาดเงิน 20`")
+
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "🎯 เช็คโอกาสปรับพอร์ต", "callback_data": "btn_check_opp"}]
+            ]
+        }
+        self.send_reply(chat_id, "\n".join(lines), reply_markup=reply_markup)
+
+    def _handle_setport(self, chat_id: str, text: str):
+        """
+        Parses and updates the user's custom portfolio weights directly from chat.
+        Usage: /setport ทองคำ 10, หุ้นนอก 30, ตราสารหนี้ 40, ตลาดเงิน 20
+        """
+        raw_input = text
+        for prefix in ["/setport", "/updateport", "ตั้งพอร์ต", "ปรับพอร์ต"]:
+            if raw_input.startswith(prefix):
+                raw_input = raw_input[len(prefix):].strip()
+                break
+
+        if not raw_input:
+            msg = (
+                "ℹ️ *วิธีใช้งานคำสั่งตั้งค่าพอร์ต:*\n\n"
+                "พิมพ์ระบุชื่อแผนและเปอร์เซ็นต์ (ผลรวมต้องได้ 100%) เช่น:\n"
+                "`/setport ทองคำ 10, หุ้นนอก 30, ตราสารหนี้ 40, ตลาดเงิน 20`\n\n"
+                "ชื่อแผนที่รองรับ: `ทองคำ`, `หุ้นนอก`, `หุ้นไทย`, `ตราสารหนี้`, `ตลาดเงิน`, `อสังหา`, `ตราสารหนี้ตปท`"
+            )
+            self.send_reply(chat_id, msg)
+            return
+
+        # Parse pairs using regex
+        # Look for pattern: <name> <number>%? or <name>:<number>%?
+        tokens = re.split(r"[,;\n]+", raw_input)
+        new_weights: Dict[str, float] = {k: 0.0 for k in ASSET_NAMES.keys()}
+        found_any = False
+
+        for token in tokens:
+            token = token.strip()
+            if not token:
+                continue
+            match = re.search(r"([^\d:=]+)\s*[:=\s]\s*(\d+(?:\.\d+)?)%?", token)
+            if match:
+                raw_name = match.group(1).strip().lower()
+                val = float(match.group(2))
+                # Map to standard asset key
+                matched_key = None
+                for alias, asset_key in ASSET_ALIASES.items():
+                    if alias in raw_name or raw_name in alias:
+                        matched_key = asset_key
+                        break
+                if matched_key:
+                    new_weights[matched_key] = val / 100.0 if val > 1.0 else val
+                    found_any = True
+
+        if not found_any:
+            self.send_reply(
+                chat_id, 
+                "⚠️ ไม่สามารถอ่านรูปแบบสัดส่วนได้ กรุณาระบุ เช่น:\n`/setport ทองคำ 10, หุ้นนอก 30, ตราสารหนี้ 40, ตลาดเงิน 20`"
+            )
+            return
+
+        total_sum = sum(new_weights.values())
+        if abs(total_sum - 1.0) > 0.015:  # Tolerance within 1.5%
+            self.send_reply(
+                chat_id,
+                f"⚠️ ผลรวมสัดส่วนต้องเท่ากับ 100% พอดี (สัดส่วนที่คุณระบุรวมได้: *{total_sum * 100:.1f}%*)\n"
+                "กรุณาตรวจสอบตัวเลขอีกครั้งครับ"
+            )
+            return
+
+        # Normalize to exactly 1.0
+        normalized_weights = {k: round(v / total_sum, 3) for k, v in new_weights.items()}
+        diff = 1.0 - sum(normalized_weights.values())
+        if abs(diff) > 0.0001:
+            max_key = max(normalized_weights, key=normalized_weights.get)
+            normalized_weights[max_key] = round(normalized_weights[max_key] + diff, 3)
+
+        # Save to Google Sheets
+        user_id = "client_user"
+        success = self.sheets.save_user_mixed_portfolio(user_id, normalized_weights)
+
+        summary_lines = []
+        for k, v in normalized_weights.items():
+            if v > 0:
+                summary_lines.append(f"• {ASSET_NAMES.get(k, k)}: `{v * 100:.1f}%`")
+
+        msg = (
+            "✅ *[บันทึกสัดส่วนพอร์ตใหม่เรียบร้อยแล้ว]*\n\n"
+            "📋 *สัดส่วนพอร์ตที่บันทึก:*\n" +
+            "\n".join(summary_lines) +
+            "\n\nระบบจะนำสัดส่วนนี้ไปใช้เป็นฐานในการเฝ้าระวังและแจ้งเตือนโอกาส Rebalance ต่อไปครับ 🚀"
+        )
         self.send_reply(chat_id, msg)
+
+    def _handle_confirm_rebalance(self, chat_id: str):
+        """Records that user has executed rebalance in My GPF, deducting 1 annual quota."""
+        user_id = "client_user"
+        quota = self.sheets.get_annual_quota_status(user_id)
+        if quota["remaining"] <= 0:
+            self.send_reply(chat_id, "⚠️ คุณใช้สิทธิ์เปลี่ยนแผนการลงทุนปีนี้ครบ 12 ครั้งแล้ว ไม่สามารถบันทึกเพิ่มได้ครับ")
+            return
+
+        weights = self.sheets.get_user_mixed_portfolio(user_id)
+        signals = self.sheets.get_latest_signals()
+        detector = OpportunityDetector(max_rebalances=12)
+        opp = detector.evaluate_opportunity(weights, signals, quota["used"])
+
+        opt_weights = opp.get("optimized_weights", weights)
+        curr_score = opp.get("current_score", 50.0)
+        opt_score = opp.get("optimized_score", 50.0)
+
+        # 1. Update current portfolio weights to optimized
+        self.sheets.save_user_mixed_portfolio(user_id, opt_weights)
+        # 2. Record to Rebalance_Log
+        self.sheets.record_rebalance_execution(
+            user_id=user_id,
+            old_weights=weights,
+            new_weights=opt_weights,
+            score_before=curr_score,
+            score_after=opt_score,
+            reason="บันทึกยืนยันผ่าน Telegram Bot",
+            action_type="CONFIRMED"
+        )
+
+        new_quota = self.sheets.get_annual_quota_status(user_id)
+        msg = (
+            "🎉 *[บันทึกการปรับพอร์ต กบข. สำเร็จ]*\n\n"
+            f"✅ อัปเดตสัดส่วนพอร์ตเป้าหมายใหม่เรียบร้อยแล้ว\n"
+            f"📊 สิทธิ์การเปลี่ยนแผนปี {new_quota['year']}: "
+            f"ใช้ไปแล้ว *{new_quota['used']}/{new_quota['max_allowed']}* ครั้ง "
+            f"(คงเหลืออีก *{new_quota['remaining']}* ครั้ง)\n"
+            f"📈 คะแนนประสิทธิภาพพอร์ตยกระดับเป็น: *{opt_score:.1f} / 100.0*\n\n"
+            "ระบบจะเริ่มจับตาและคำนวณจากสัดส่วนใหม่นี้ทันทีครับ 🚀"
+        )
+        self.send_reply(chat_id, msg)
+
+    def _handle_ai_chat(self, chat_id: str, user_question: str):
+        """Natural conversational QA about GPF portfolio, market rationale, and terms."""
+        user_id = "client_user"
+        weights = self.sheets.get_user_mixed_portfolio(user_id)
+        signals = self.sheets.get_latest_signals()
+        quota = self.sheets.get_annual_quota_status(user_id)
+
+        answer = self.gemini.ask_portfolio_advisor(
+            user_question=user_question,
+            current_weights=weights,
+            signals=signals,
+            quota_status=quota
+        )
+        self.send_reply(chat_id, answer)
+
+    def _handle_callback_query(self, callback_query: Dict[str, Any]):
+        """Handles button clicks on Telegram inline keyboards."""
+        cb_id = callback_query.get("id")
+        data = callback_query.get("data", "")
+        message = callback_query.get("message", {})
+        chat = message.get("chat", {})
+        chat_id = str(chat.get("id", ""))
+
+        self.answer_callback_query(cb_id, text="กำลังประมวลผล...")
+
+        if data == "btn_mygpf_weights":
+            # Show target weights formatted for typing into My GPF
+            user_id = "client_user"
+            weights = self.sheets.get_user_mixed_portfolio(user_id)
+            signals = self.sheets.get_latest_signals()
+            quota = self.sheets.get_annual_quota_status(user_id)
+            detector = OpportunityDetector(max_rebalances=12)
+            opp = detector.evaluate_opportunity(weights, signals, quota["used"])
+            opt = opp.get("optimized_weights", weights)
+
+            lines = ["📋 *[สัดส่วนสำหรับกรอกในแอป My GPF]*\n"]
+            for a_key, a_name in ASSET_NAMES.items():
+                w = opt.get(a_key, 0.0) * 100
+                lines.append(f"• {a_name}: `{w:.1f}%`")
+            lines.append("\nเปิดแอป My GPF ➔ เลือกเปลี่ยนแผน ➔ ระบุสัดส่วนตามนี้ได้เลยครับ")
+            self.send_reply(chat_id, "\n".join(lines))
+
+        elif data == "btn_why_rebalance":
+            user_id = "client_user"
+            weights = self.sheets.get_user_mixed_portfolio(user_id)
+            signals = self.sheets.get_latest_signals()
+            quota = self.sheets.get_annual_quota_status(user_id)
+            detector = OpportunityDetector(max_rebalances=12)
+            opp = detector.evaluate_opportunity(weights, signals, quota["used"])
+            
+            # Ask Gemini to explain why
+            explanation = self.gemini.ask_portfolio_advisor(
+                user_question=f"อธิบายเหตุผลอย่างละเอียดและเข้าใจง่ายว่าทำไมตอนนี้ระบบถึงมีคำแนะนำ: {opp.get('reason', '')}",
+                current_weights=weights,
+                signals=signals,
+                quota_status=quota
+            )
+            self.send_reply(chat_id, f"💡 *[บทวิเคราะห์เหตุผลการปรับพอร์ต]:*\n\n{explanation}")
+
+        elif data == "btn_confirm_rebalance":
+            self._handle_confirm_rebalance(chat_id)
+
+        elif data == "btn_view_my_port":
+            self._handle_myportfolio(chat_id)
+
+        elif data == "btn_check_opp":
+            self._handle_opportunity(chat_id)
 
     def _handle_sync(self, chat_id: str):
         self.send_reply(chat_id, "🔄 กำลังเริ่มประมวลผลข้อมูลตลาดและคำนวณคะแนนใหม่ กรุณารอสักครู่ (ประมาณ 5-10 วินาที)...")
@@ -251,13 +563,18 @@ class TelegramWebhookHandler:
             "🤖 *ยินดีต้อนรับสู่ Gor.PF AI Advisor!*\n"
             "ระบบเฝ้าระวังตลาดและตรวจจับโอกาสทำกำไรสำหรับกองทุน กบข.\n\n"
             "💡 *คำสั่งที่คุณสามารถใช้งานได้:*\n"
-            "👉 `/ping` หรือ `/check` - ตรวจสอบว่าระบบทำงานอยู่หรือไม่\n"
-            "👉 `/status` - ดูสัญญาณและคะแนนจัดพอร์ตกองทุนปัจจุบัน\n"
-            "👉 `/quota` - ตรวจสอบสิทธิ์เปลี่ยนแผน กบข. ประจำปี (12 ครั้ง/ปี)\n"
+            "👉 `/myportfolio` หรือ `/port` - ดูสัดส่วนพอร์ต กบข. ปัจจุบันของคุณ\n"
+            "👉 `/setport` - ตั้งค่าสัดส่วนพอร์ต เช่น `/setport ทองคำ 10, หุ้นนอก 30, ตราสารหนี้ 40, ตลาดเงิน 20`\n"
             "👉 `/opportunity` - ตรวจสอบโอกาสทำกำไรและคำแนะนำปรับพอร์ต\n"
+            "👉 `/status` - ดูสัญญาณตลาดและคะแนนทั้ง 7 แผน\n"
+            "👉 `/quota` - ตรวจสอบสิทธิ์เปลี่ยนแผน กบข. ประจำปี (12 ครั้ง/ปี)\n"
+            "👉 `/confirm` - บันทึกยืนยันว่าปรับพอร์ตใน My GPF เรียบร้อยแล้ว\n"
             "👉 `/sync` - สั่งให้อัปเดตราคาตลาดและวิเคราะห์ใหม่ทันที\n"
-            "👉 `/help` - แสดงคำสั่งช่วยเหลือนี้\n\n"
-            "ระบบจะส่งแจ้งเตือนอัตโนมัติทันทีเมื่อมีโอกาสทำกำไรหรือมีสัญญาณลดความเสี่ยงครับ 🔔"
+            "👉 `/ping` - ตรวจสอบสถานะการทำงานของระบบ\n\n"
+            "💬 *หรือพิมพ์ถามคำถามทั่วไปได้เลย!* เช่น:\n"
+            "• _\"ทำไมถึงให้ลดทองคำ?\"_\n"
+            "• _\"ตอนนี้หุ้นนอกยังน่าถืออยู่มั้ย?\"_\n"
+            "• _\"ลดทอง -8% หมายความว่ายังไง?\"_"
         )
         self.send_reply(chat_id, msg)
 
@@ -267,13 +584,9 @@ class TelegramWebhookHandler:
             "🎉 *ยินดีต้อนรับสู่ Gor.PF AI Advisor!*\n\n"
             "✅ *ระบบได้ลงทะเบียนรับการแจ้งเตือนให้ท่านเรียบร้อยแล้ว!*\n"
             "ทุกครั้งที่ระบบตรวจพบโอกาสทำกำไร หรือสัญญาณลดความเสี่ยง ระบบจะส่งข้อความแจ้งเตือนมายังห้องแชตนี้โดยอัตโนมัติ 🚀\n\n"
-            "💡 *คำสั่งที่คุณสามารถใช้งานได้ตลอด 24 ชม.:*\n"
-            "👉 `/ping` : ตรวจสอบว่าระบบทำงานอยู่หรือไม่\n"
-            "👉 `/status` : ดูสัญญาณตลาดและคะแนนของทุกแผน กบข.\n"
-            "👉 `/quota` : ตรวจสอบสิทธิ์เปลี่ยนแผน กบข. ปี 2026 (12 ครั้ง/ปี)\n"
-            "👉 `/opportunity` : ตรวจสอบโอกาสทำกำไรและคำแนะนำปรับพอร์ต\n"
-            "👉 `/help` : แสดงรายการช่วยเหลือ\n\n"
-            "ขอบคุณที่ไว้วางใจให้ Gor.PF เป็นผู้ช่วยติดตามพอร์ต กบข. ของท่านครับ"
+            "💡 *เริ่มต้นใช้งานง่ายๆ:*\n"
+            "👉 พิมพ์ `/myportfolio` เพื่อดูพอร์ตของคุณ\n"
+            "👉 หรือพิมพ์ถามคำถามเกี่ยวกับพอร์ต กบข. ได้ทันทีครับ"
         )
         self.send_reply(chat_id, msg)
 
