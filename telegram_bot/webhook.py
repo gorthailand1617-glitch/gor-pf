@@ -49,6 +49,8 @@ class TelegramWebhookHandler:
         self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.allowed_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         self.enabled = bool(self.bot_token)
+        # In-memory multi-turn conversation history per chat_id: {chat_id: [{"role": "user"|"model", "content": "..."}]}
+        self.conversation_memory: Dict[str, List[Dict[str, str]]] = {}
 
     @property
     def sheets(self) -> GPFSpreadsheetClient:
@@ -61,6 +63,16 @@ class TelegramWebhookHandler:
         if self._gemini is None:
             self._gemini = GeminiAnalysisService()
         return self._gemini
+
+    def send_chat_action(self, chat_id: str, action: str = "typing"):
+        """Sends a chat action such as 'typing' to show real-time AI activity in Telegram."""
+        if not self.bot_token or not chat_id:
+            return
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendChatAction"
+        try:
+            requests.post(url, json={"chat_id": chat_id, "action": action}, timeout=3)
+        except Exception:
+            pass
 
     def send_reply(self, chat_id: str, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> bool:
         """Sends a text message back to the user via Telegram with optional inline keyboard."""
@@ -147,6 +159,8 @@ class TelegramWebhookHandler:
             self._handle_status(chat_id)
         elif cmd in ["/quota"]:
             self._handle_quota(chat_id)
+        elif cmd in ["/setquota"]:
+            self._handle_setquota(chat_id, text)
         elif cmd in ["/opportunity", "/rebalance"]:
             self._handle_opportunity(chat_id)
         elif cmd in ["/myportfolio", "/myport", "/port"]:
@@ -157,18 +171,26 @@ class TelegramWebhookHandler:
             self._handle_confirm_rebalance(chat_id)
         elif cmd in ["/sync"]:
             self._handle_sync(chat_id)
+        elif cmd in ["/reset", "/clear", "/newchat"]:
+            self._handle_reset_chat(chat_id)
         elif cmd in ["/start", "/subscribe"]:
             self._handle_subscribe(chat_id, display_name)
         elif cmd in ["/help"]:
             self._handle_help(chat_id)
         else:
-            # Check if user says something like "ตั้งพอร์ต..." or "พอร์ตฉัน..."
-            if text.startswith("ตั้งพอร์ต") or text.startswith("ปรับพอร์ต"):
+            # Natural language conversational routing
+            if any(w in text for w in ["ล้างแชท", "เริ่มคุยใหม่", "รีเซ็ตแชท", "ลืมบทสนทนา", "ล้างความจำ"]):
+                self._handle_reset_chat(chat_id)
+            elif text.startswith("ตั้งพอร์ต") or text.startswith("ปรับพอร์ต"):
                 self._handle_setport(chat_id, text)
-            elif any(w in text for w in ["พอร์ตฉัน", "พอร์ตของฉัน", "ดูพอร์ต", "ถืออะไร"]):
+            elif any(w in text for w in ["พอร์ตฉัน", "พอร์ตของฉัน", "ดูพอร์ต", "ถืออะไร"]) and not any(w in text for w in ["ทำไม", "อย่างไร", "ดีไหม", "แนะนำ"]):
                 self._handle_myportfolio(chat_id)
+            elif any(w in text for w in ["ใช้โควต้า", "ใช้โควตา", "เปลี่ยนไป", "ปรับไปแล้ว"]) and any(c.isdigit() for c in text):
+                self._handle_setquota(chat_id, text)
+            elif any(w in text for w in ["สิทธิ์เหลือเท่าไหร่", "โควต้าเหลือเท่าไหร่", "โควตาเหลือเท่าไหร่"]):
+                self._handle_quota(chat_id)
             else:
-                # Conversational AI fallback via Gemini
+                # Conversational AI with multi-turn memory
                 self._handle_ai_chat(chat_id, text)
 
     def _handle_ping(self, chat_id: str):
@@ -269,6 +291,39 @@ class TelegramWebhookHandler:
             f"• แถบสิทธิ์: {blocks}\n"
             f"• ปรับล่าสุด: `{quota['last_rebalance'] or 'ยังไม่มีประวัติการปรับในปีนี้'}`\n\n"
             f"💡 ตามระเบียบ กบข. สมาชิกสามารถเปลี่ยนแผนได้สูงสุด 12 ครั้งต่อปีปฏิทิน เพื่อเปิดโอกาสให้ปรับตามสภาวะเศรษฐกิจ"
+        )
+        self.send_reply(chat_id, msg)
+
+    def _handle_setquota(self, chat_id: str, text: str):
+        """
+        Allows the user to set or update how many rebalances they have used this year.
+        Usage: /setquota 3 or natural language like 'ปีนี้ฉันใช้โควต้าไป 3 ครั้งแล้ว'
+        """
+        match = re.search(r"(\d+)", text)
+        if not match:
+            self.send_reply(chat_id, "⚠️ กรุณาระบุจำนวนครั้งที่ใช้ไป เช่น: `/setquota 3` หรือ `ใช้โควตาไปแล้ว 3 ครั้ง`")
+            return
+
+        used_count = int(match.group(1))
+        if used_count < 0 or used_count > 12:
+            self.send_reply(chat_id, "⚠️ จำนวนครั้งต้องอยู่ระหว่าง 0 ถึง 12 ครั้ง (ตามเกณฑ์ กบข. ไม่เกิน 12 ครั้งต่อปีครับ)")
+            return
+
+        user_id = "client_user"
+        updated_quota = self.sheets.set_annual_quota(user_id, used_count)
+
+        used = updated_quota["used"]
+        remaining = updated_quota["remaining"]
+        max_allowed = updated_quota["max_allowed"]
+        blocks = "🟩" * used + "⬜" * remaining
+
+        msg = (
+            f"✅ *[บันทึกสิทธิ์โควตา กบข. เรียบร้อยแล้ว]*\n\n"
+            f"• ประจำปี: `{updated_quota['year']}`\n"
+            f"• บันทึกว่าใช้ไปแล้ว: *{used} / {max_allowed} ครั้ง*\n"
+            f"• สิทธิ์คงเหลือจริง: *{remaining} ครั้ง*\n"
+            f"• แถบสิทธิ์: {blocks}\n\n"
+            f"ระบบจะใช้จำนวนโควตานี้ ({remaining} ครั้งที่เหลือ) ในการคำนวณจังหวะ Rebalance เพื่อให้คุ้มค่าที่สุดตลอดทั้งปีครับ 🚀"
         )
         self.send_reply(chat_id, msg)
 
@@ -382,10 +437,11 @@ class TelegramWebhookHandler:
             if match:
                 raw_name = match.group(1).strip().lower()
                 val = float(match.group(2))
-                # Map to standard asset key
+                # Map to standard asset key (sort by longest alias first to match specific phrases like 'ตราสารหนี้ระยะสั้น' before 'ตราสารหนี้')
                 matched_key = None
-                for alias, asset_key in ASSET_ALIASES.items():
-                    if alias in raw_name or raw_name in alias:
+                sorted_aliases = sorted(ASSET_ALIASES.items(), key=lambda x: len(x[0]), reverse=True)
+                for alias, asset_key in sorted_aliases:
+                    if alias in raw_name or raw_name == alias:
                         matched_key = asset_key
                         break
                 if matched_key:
@@ -474,19 +530,45 @@ class TelegramWebhookHandler:
         )
         self.send_reply(chat_id, msg)
 
+    def _handle_reset_chat(self, chat_id: str):
+        """Resets the conversation history for this chat."""
+        self.conversation_memory[chat_id] = []
+        msg = (
+            "🧹 *[รีเซ็ตประวัติการสนทนาเรียบร้อยแล้ว]*\n\n"
+            "ระบบล้างบริบทการสนทนาก่อนหน้าแล้ว ท่านสามารถเริ่มบทสนทนาใหม่กับ AI ได้เลยครับ 🚀\n\n"
+            "💡 _ลองถามได้ทุกเรื่อง เช่น: \"ตลาดวันนี้เป็นไง\", \"ทองคำน่าซื้อมั้ย\", \"แนะนำปรับพอร์ตหน่อย\"_"
+        )
+        self.send_reply(chat_id, msg)
+
     def _handle_ai_chat(self, chat_id: str, user_question: str):
-        """Natural conversational QA about GPF portfolio, market rationale, and terms."""
+        """Natural conversational QA about GPF portfolio, market rationale, and terms with multi-turn memory."""
+        # 1. Trigger Telegram 'typing...' action immediately
+        self.send_chat_action(chat_id, "typing")
+
         user_id = "client_user"
         weights = self.sheets.get_user_mixed_portfolio(user_id)
         signals = self.sheets.get_latest_signals()
         quota = self.sheets.get_annual_quota_status(user_id)
 
+        # 2. Retrieve recent conversation history
+        chat_history = self.conversation_memory.get(chat_id, [])
+
         answer = self.gemini.ask_portfolio_advisor(
             user_question=user_question,
             current_weights=weights,
             signals=signals,
-            quota_status=quota
+            quota_status=quota,
+            conversation_history=chat_history
         )
+
+        # 3. Store conversation turns (keep last 10 messages = 5 turns)
+        if chat_id not in self.conversation_memory:
+            self.conversation_memory[chat_id] = []
+        self.conversation_memory[chat_id].append({"role": "user", "content": user_question})
+        self.conversation_memory[chat_id].append({"role": "model", "content": answer})
+        if len(self.conversation_memory[chat_id]) > 10:
+            self.conversation_memory[chat_id] = self.conversation_memory[chat_id][-10:]
+
         self.send_reply(chat_id, answer)
 
     def _handle_callback_query(self, callback_query: Dict[str, Any]):
@@ -560,21 +642,26 @@ class TelegramWebhookHandler:
 
     def _handle_help(self, chat_id: str):
         msg = (
-            "🤖 *ยินดีต้อนรับสู่ Gor.PF AI Advisor!*\n"
-            "ระบบเฝ้าระวังตลาดและตรวจจับโอกาสทำกำไรสำหรับกองทุน กบข.\n\n"
-            "💡 *คำสั่งที่คุณสามารถใช้งานได้:*\n"
-            "👉 `/myportfolio` หรือ `/port` - ดูสัดส่วนพอร์ต กบข. ปัจจุบันของคุณ\n"
-            "👉 `/setport` - ตั้งค่าสัดส่วนพอร์ต เช่น `/setport ทองคำ 10, หุ้นนอก 30, ตราสารหนี้ 40, ตลาดเงิน 20`\n"
+            "🤖 *[Gor.PF AI Advisor - คู่มือการใช้งานและคำสั่ง]*\n"
+            "ระบบที่ปรึกษาการลงทุนอัจฉริยะสำหรับกองทุน กบข. สนทนาโต้ตอบได้เหมือน AI แท้ๆ 💬✨\n\n"
+            "💬 *คุณสามารถพิมพ์คุยกับ AI ได้โดยตรงทันที!* ไม่จำเป็นต้องพิมพ์คำสั่ง เช่น:\n"
+            "• _\"สวัสดี บอททำอะไรได้บ้าง\"_\n"
+            "• _\"ตลาด กบข. วันนี้เป็นยังไงบ้าง\"_\n"
+            "• _\"ช่วงนี้ทองคำยังน่าถือต่อมั้ย\"_\n"
+            "• _\"พอร์ตของฉันตอนนี้โอเคหรือยัง\"_\n"
+            "• _\"แนะนำการปรับพอร์ตหน่อย\"_\n\n"
+            "⚡ *ปุ่มลัดและคำสั่งด่วน (Commands):*\n"
+            "👉 `/daily` - สรุปสภาวะตลาด กบข. ประจำวัน\n"
             "👉 `/opportunity` - ตรวจสอบโอกาสทำกำไรและคำแนะนำปรับพอร์ต\n"
-            "👉 `/status` - ดูสัญญาณตลาดและคะแนนทั้ง 7 แผน\n"
+            "👉 `/myportfolio` หรือ `/port` - ดูสัดส่วนพอร์ต กบข. ของคุณ\n"
+            "👉 `/status` - ดูคะแนนสัญญาณเทคนิคทั้ง 7 แผน\n"
             "👉 `/quota` - ตรวจสอบสิทธิ์เปลี่ยนแผน กบข. ประจำปี (12 ครั้ง/ปี)\n"
+            "👉 `/setquota <จำนวนครั้ง>` - บันทึกจำนวนครั้งที่ปรับแผนไปแล้ว เช่น `/setquota 3`\n"
+            "👉 `/setport` - ตั้งค่าสัดส่วนพอร์ต เช่น `/setport ทองคำ 10, หุ้นนอก 30, ตลาดเงิน 60`\n"
             "👉 `/confirm` - บันทึกยืนยันว่าปรับพอร์ตใน My GPF เรียบร้อยแล้ว\n"
             "👉 `/sync` - สั่งให้อัปเดตราคาตลาดและวิเคราะห์ใหม่ทันที\n"
-            "👉 `/ping` - ตรวจสอบสถานะการทำงานของระบบ\n\n"
-            "💬 *หรือพิมพ์ถามคำถามทั่วไปได้เลย!* เช่น:\n"
-            "• _\"ทำไมถึงให้ลดทองคำ?\"_\n"
-            "• _\"ตอนนี้หุ้นนอกยังน่าถืออยู่มั้ย?\"_\n"
-            "• _\"ลดทอง -8% หมายความว่ายังไง?\"_"
+            "👉 `/reset` หรือ `/clear` - ล้างประวัติการสนทนาเพื่อเริ่มคุยใหม่\n"
+            "👉 `/ping` - ตรวจสอบสถานะการเชื่อมต่อของระบบ"
         )
         self.send_reply(chat_id, msg)
 

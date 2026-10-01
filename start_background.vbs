@@ -3,5 +3,7 @@ Set WshShell = CreateObject("WScript.Shell")
 Set FSO = CreateObject("Scripting.FileSystemObject")
 strCurrentDir = FSO.GetParentFolderName(WScript.ScriptFullName)
 WshShell.CurrentDirectory = strCurrentDir
-' Run python run.py invisibly (0 = hide window, False = don't wait)
-WshShell.Run """" & strCurrentDir & "\.venv\Scripts\python.exe"" run.py", 0, False
+q = Chr(34)
+cmd = q & strCurrentDir & "\.venv\Scripts\pythonw.exe" & q & " " & q & strCurrentDir & "\start_bot.py" & q
+WshShell.Run cmd, 0, False
+

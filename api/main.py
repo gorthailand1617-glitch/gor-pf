@@ -86,8 +86,41 @@ def read_root():
     return {
         "status": "healthy",
         "service": "GPF-SmartInvestor-AI",
-        "environment": "development"
+        "environment": "production" if os.getenv("PORT") else "development"
     }
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    handler=Depends(get_telegram_handler)
+):
+    """Webhook endpoint for receiving Telegram Bot updates in cloud/online deployments."""
+    try:
+        body = await request.json()
+        background_tasks.add_task(handler.process_update, body)
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Error processing Telegram webhook: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/telegram/status")
+def telegram_status(handler=Depends(get_telegram_handler)):
+    """Returns Telegram bot status and webhook configuration info."""
+    import requests
+    if not handler.bot_token:
+        return {"status": "disabled", "error": "TELEGRAM_BOT_TOKEN not configured"}
+    try:
+        res = requests.get(f"https://api.telegram.org/bot{handler.bot_token}/getWebhookInfo", timeout=5)
+        webhook_info = res.json() if res.status_code == 200 else {}
+        return {
+            "status": "active",
+            "bot_enabled": handler.enabled,
+            "webhook_info": webhook_info
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 
 @app.get("/api/signals")
 def get_latest_signals(sheets: GPFSpreadsheetClient = Depends(get_sheets_client)):

@@ -43,6 +43,8 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # 4. Local Databases & Logs
+data/
+data/*.json
 data/*.db
 data/*.db*
 data/*.sqlite
@@ -52,6 +54,8 @@ data/*.sqlite3
 *.sqlite
 *.sqlite3
 *.log
+bot_service.log
+
 
 # 5. OS & IDE Metadata
 .DS_Store
