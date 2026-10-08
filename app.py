@@ -214,7 +214,8 @@ with gr.Blocks(title="Gor.PF - GPF Smart Investor AI", theme=gr.themes.Soft()) a
                     "เดือนนี้ฉันต้องปรับแผนอะไร",
                     "แนะนำแผน กบข. สำหรับคนรับความเสี่ยงได้ปานกลาง",
                     "ตลาดหุ้นโลกช่วงนี้เป็นอย่างไร"
-                ]
+                ],
+                cache_examples=False
             )
 
         with gr.TabItem("ℹ️ ข้อมูลระบบ & การตั้งค่า"):
