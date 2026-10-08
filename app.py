@@ -139,6 +139,19 @@ def send_test_telegram():
     except Exception as e:
         return f"❌ ข้อผิดพลาด: {str(e)}"
 
+try:
+    import spaces
+except ImportError:
+    class _MockSpaces:
+        def GPU(self, fn=None, duration=None):
+            def decorator(f):
+                return f
+            if fn is not None:
+                return fn
+            return decorator
+    spaces = _MockSpaces()
+
+@spaces.GPU
 def ask_gpf_ai(user_question, history):
     """Interactive AI Assistant using Gemini & GPF Context"""
     try:
@@ -172,6 +185,10 @@ def ask_gpf_ai(user_question, history):
         return response
     except Exception as e:
         return f"ขออภัย ไม่สามารถตอบคำถามได้ในขณะนี้: {str(e)}"
+
+@spaces.GPU
+def gpu_health_check():
+    return "GPU Online"
 
 def get_system_status():
     """Return live status markdown"""
