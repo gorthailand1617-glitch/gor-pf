@@ -55,9 +55,10 @@ def start_background_services():
         if handler.bot_token:
             thread = start_telegram_polling(handler)
             app_state["telegram_status"] = "Online 🟢 (@Gor_Gpf_bot actively listening)"
-            logger.info("Telegram Bot polling started successfully.")
+            logger.info("Telegram Bot polling started successfully. Bot is ONLINE 🟢!")
         else:
             app_state["telegram_status"] = "Offline 🟡 (TELEGRAM_BOT_TOKEN not configured)"
+            logger.warning("⚠️ TELEGRAM_BOT_TOKEN not found in environment/secrets! Please add it in Settings > Variables and secrets.")
     except Exception as e:
         app_state["telegram_status"] = f"Error: {e}"
         logger.warning(f"Could not start Telegram Bot: {e}")
