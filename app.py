@@ -6,6 +6,7 @@ Runs 24/7 in the cloud:
 - Provides an interactive Gradio Dashboard & AI Chat interface
 """
 import os
+os.environ["GRADIO_SSR"] = "False"
 import sys
 import threading
 import time
@@ -209,6 +210,7 @@ with gr.Blocks(title="Gor.PF - GPF Smart Investor AI", theme=gr.themes.Soft()) a
             gr.Markdown("พิมพ์คำถามเกี่ยวกับแผน กบข., การจัดสรรพอร์ต, หรือสถานะตลาดหุ้นได้ทันที")
             gr.ChatInterface(
                 fn=ask_gpf_ai,
+                type="messages",
                 examples=[
                     "ตอนนี้ฉันลงทุนอะไรเท่าไร",
                     "เดือนนี้ฉันต้องปรับแผนอะไร",
@@ -228,4 +230,21 @@ with gr.Blocks(title="Gor.PF - GPF Smart Investor AI", theme=gr.themes.Soft()) a
             """)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    launch_kwargs = {
+        "server_name": "0.0.0.0",
+        "server_port": 7860,
+    }
+    import inspect
+    sig = inspect.signature(demo.launch)
+    if "ssr" in sig.parameters:
+        launch_kwargs["ssr"] = False
+    if "ssr_mode" in sig.parameters:
+        launch_kwargs["ssr_mode"] = False
+    demo.launch(**launch_kwargs)
+    
+    # Keep process alive so background threads continue
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
