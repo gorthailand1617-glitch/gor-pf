@@ -35,8 +35,12 @@ app_state = {
 }
 
 # 1. Background Service Initializer
+_bg_started = False
 def start_background_services():
-    global app_state
+    global _bg_started, app_state
+    if _bg_started:
+        return
+    _bg_started = True
     
     # 1.1 Start APScheduler
     try:
@@ -231,6 +235,7 @@ with gr.Blocks(title="Gor.PF - GPF Smart Investor AI", theme=gr.themes.Soft()) a
             """)
 
 if __name__ == "__main__":
+    start_background_services()
     launch_kwargs = {
         "server_name": "0.0.0.0",
         "server_port": 7860,

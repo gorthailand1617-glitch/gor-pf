@@ -695,40 +695,79 @@ class TelegramWebhookHandler:
 
 
 def start_telegram_polling(handler: Optional[TelegramWebhookHandler] = None):
-    """Runs a background polling loop to receive Telegram commands in local dev mode."""
+    """Runs a resilient background polling loop to receive Telegram commands."""
     import threading
     import time
     
     handler = handler or TelegramWebhookHandler()
     if not handler.enabled:
-        logger.info("Telegram Bot token missing. Polling service disabled.")
+        logger.warning("Telegram Bot token missing. Polling service disabled.")
         return None
         
-    def poll_loop():
+    def poll_worker():
         offset = 0
         token = handler.bot_token
-        logger.info("Telegram Bot polling service started. Listening for commands on @Gor_Gpf_bot...")
-        # Clear webhook first so getUpdates works
+        session = requests.Session()
+        
+        logger.info("Initializing Telegram Polling: checking & deleting webhook...")
         try:
-            requests.get(f"https://api.telegram.org/bot{token}/deleteWebhook", timeout=5)
-        except Exception:
-            pass
+            r = session.get(f"https://api.telegram.org/bot{token}/deleteWebhook", timeout=10)
+            logger.info(f"deleteWebhook response: {r.status_code} - {r.text}")
+        except Exception as e:
+            logger.warning(f"deleteWebhook error: {e}")
 
+        logger.info("Telegram Bot polling service started! Actively listening for updates on @Gor_Gpf_bot...")
+        
+        fail_count = 0
         while True:
             try:
-                url = f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}&timeout=10"
-                res = requests.get(url, timeout=15)
+                url = f"https://api.telegram.org/bot{token}/getUpdates"
+                params = {"offset": offset, "timeout": 15, "limit": 20}
+                res = session.get(url, params=params, timeout=25)
+                
                 if res.status_code == 200:
-                    updates = res.json().get("result", [])
-                    for u in updates:
-                        offset = u["update_id"] + 1
-                        threading.Thread(target=handler.process_update, args=(u,), daemon=True).start()
+                    fail_count = 0
+                    data = res.json()
+                    if not data.get("ok"):
+                        logger.warning(f"Telegram API returned ok=false: {data}")
+                        time.sleep(3)
+                        continue
+                        
+                    updates = data.get("result", [])
+                    if updates:
+                        logger.info(f"Received {len(updates)} Telegram update(s) from getUpdates")
+                        for u in updates:
+                            update_id = u.get("update_id", 0)
+                            if update_id >= offset:
+                                offset = update_id + 1
+                            try:
+                                handler.process_update(u)
+                            except Exception as proc_err:
+                                logger.error(f"Error processing update {update_id}: {proc_err}", exc_info=True)
+                elif res.status_code == 409:
+                    logger.warning("Telegram 409 Conflict: another polling instance is active. Retrying in 5s...")
+                    time.sleep(5)
                 else:
+                    fail_count += 1
+                    logger.warning(f"Telegram getUpdates HTTP {res.status_code}: {res.text}. (Fail #{fail_count})")
                     time.sleep(3)
+            except requests.exceptions.Timeout:
+                # Normal timeout when no new messages arrived during 15s long-poll
+                continue
             except Exception as e:
+                fail_count += 1
+                logger.error(f"Telegram poll exception: {e}. Retrying in 3s...", exc_info=(fail_count <= 3))
                 time.sleep(3)
                 
-    thread = threading.Thread(target=poll_loop, daemon=True)
+    def supervisor():
+        while True:
+            try:
+                poll_worker()
+            except Exception as e:
+                logger.critical(f"FATAL: Telegram poll_worker crashed: {e}. Restarting in 5s...", exc_info=True)
+                time.sleep(5)
+
+    thread = threading.Thread(target=supervisor, daemon=True, name="TelegramPollThread")
     thread.start()
     return thread
 
