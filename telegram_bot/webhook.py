@@ -175,7 +175,7 @@ class TelegramWebhookHandler:
             self._handle_reset_chat(chat_id)
         elif cmd in ["/start", "/subscribe"]:
             self._handle_subscribe(chat_id, display_name)
-        elif cmd in ["/help"]:
+        elif cmd in ["/help", "/?"]:
             self._handle_help(chat_id)
         else:
             # Natural language conversational routing
@@ -495,6 +495,21 @@ class TelegramWebhookHandler:
         if quota["remaining"] <= 0:
             self.send_reply(chat_id, "⚠️ คุณใช้สิทธิ์เปลี่ยนแผนการลงทุนปีนี้ครบ 12 ครั้งแล้ว ไม่สามารถบันทึกเพิ่มได้ครับ")
             return
+
+        # Debounce: prevent duplicate confirmation if already confirmed within 10 minutes
+        last_time = self.sheets.get_last_rebalance_time(user_id)
+        if last_time:
+            elapsed_sec = (datetime.now() - last_time).total_seconds()
+            if elapsed_sec < 600:
+                elapsed_min = max(1, int(elapsed_sec // 60))
+                self.send_reply(
+                    chat_id,
+                    f"ℹ️ *[ตรวจพบการยืนยันแล้ว]*\n\n"
+                    f"ท่านเพิ่งทำการยืนยันปรับพอร์ตไปเมื่อประมาณ {elapsed_min} นาทีที่แล้ว\n"
+                    f"ระบบได้บันทึกสัดส่วนพอร์ตเป้าหมายล่าสุดเรียบร้อยแล้วครับ (ไม่เสียโควตาซ้ำ) ✨\n\n"
+                    f"📊 สิทธิ์คงเหลือปีนี้: *{quota['remaining']}/{quota['max_allowed']}* ครั้ง"
+                )
+                return
 
         weights = self.sheets.get_user_mixed_portfolio(user_id)
         signals = self.sheets.get_latest_signals()

@@ -4,13 +4,62 @@ import time
 import logging
 from dotenv import load_dotenv
 
-# Ensure stdout handles UTF-8 on Windows or redirect to file if headless
-if sys.stdout is None:
-    sys.stdout = open("bot_service.log", "a", encoding="utf-8")
-if sys.stderr is None:
-    sys.stderr = open("bot_service.log", "a", encoding="utf-8")
+# Safe writer for stdout/stderr when running headless or piped
+class SafeWriter:
+    def __init__(self, filename):
+        self.filename = filename
+        self._file = None
 
-if hasattr(sys.stdout, "reconfigure"):
+    def write(self, s):
+        try:
+            if not self._file or self._file.closed:
+                self._file = open(self.filename, "a", encoding="utf-8")
+            self._file.write(s)
+            self._file.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            if self._file and not self._file.closed:
+                self._file.flush()
+        except Exception:
+            pass
+
+class SafeStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        try:
+            super().emit(record)
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            super().flush()
+        except Exception:
+            pass
+
+class SafeFileHandler(logging.FileHandler):
+    def emit(self, record):
+        try:
+            super().emit(record)
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            super().flush()
+        except Exception:
+            pass
+
+is_headless = "pythonw" in sys.executable.lower() or sys.stdout is None
+
+if sys.stdout is None:
+    sys.stdout = SafeWriter("bot_service.log")
+if sys.stderr is None:
+    sys.stderr = SafeWriter("bot_service.log")
+
+if not is_headless and hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
@@ -18,13 +67,15 @@ if hasattr(sys.stdout, "reconfigure"):
 
 load_dotenv()
 
+# Setup logging
+log_handlers = [SafeFileHandler("bot_service.log", encoding="utf-8")]
+if not is_headless:
+    log_handlers.append(SafeStreamHandler(sys.stdout))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot_service.log", encoding="utf-8")
-    ]
+    handlers=log_handlers
 )
 logger = logging.getLogger("TelegramBotService")
 
